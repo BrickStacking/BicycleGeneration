@@ -2,9 +2,9 @@
 #include <WiFiClient.h>
 WiFiClient client;
 #if defined(ESP8266)
-#include <ESP8266WiFi.h>          //https://github.com/esp8266/Arduino
+#include <ESP8266WiFi.h> //https://github.com/esp8266/Arduino
 #else
-#include <WiFi.h>          //https://github.com/esp8266/Arduino
+#include <WiFi.h> //https://github.com/esp8266/Arduino
 #endif
 //needed for library
 #include <DNSServer.h>
@@ -13,16 +13,16 @@ WiFiClient client;
 #else
 #include <WebServer.h>
 #endif
-#include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager
+#include <WiFiManager.h> //https://github.com/tzapu/WiFiManager
 #include <Ticker.h>
 
 /******** DECLARE FOR LIBRARY **********************/
 #include <Adafruit_MQTT.h>
 #include <Adafruit_MQTT_Client.h>
-#define AIO_SERVER      "io.adafruit.com"
-#define AIO_SERVERPORT  1883                   // use 8883 for SSL
-#define AIO_USERNAME  "thienlc"
-#define AIO_KEY       "84a4aa2dfb2b4c288a1cb870a7eb330b"
+#define AIO_SERVER "io.adafruit.com"
+#define AIO_SERVERPORT 1883 // use 8883 for SSL
+#define AIO_USERNAME "thienlc"
+#define AIO_KEY "84a4aa2dfb2b4c288a1cb870a7eb330b"
 Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT, AIO_USERNAME, AIO_KEY);
 Adafruit_MQTT_Publish all_data_collection = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/all_data_collection");
 Adafruit_MQTT_Publish speed_encoder = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/Speed");
@@ -45,6 +45,11 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 #define BUILTIN_LED 2
 #define Relay1 4
 #define Relay2 15
+
+/******** ENDING DECLARE **********************/
+
+/******** DECLARE FOR RTOS HANDLER **********************/
+TaskHandle_t Task1;
 
 /******** ENDING DECLARE **********************/
 
@@ -81,7 +86,12 @@ const float togglePeriod = 1; //seconds
 bool Connected2Blynk = false;
 int dem1, dem2, dem3, dem4;
 /******** ENDING DECLARE **********************/
+
+/******** DECLARE FOR VARIABLES **********************/
 void caculate_v();
+void MQTT_Pull_Data();
+void push_data_to_server();
+void Task1code( void * pvParameters );
 void tick()
 {
   //toggle state
@@ -90,7 +100,7 @@ void tick()
 }
 
 //gets called when WiFiManager enters configuration mode
-void configModeCallback(WiFiManager *myWiFiManager)
+void configModeCallback(WiFiManager * myWiFiManager)
 {
   Serial.println("Entered config mode");
   Serial.println(WiFi.softAPIP());
@@ -99,6 +109,9 @@ void configModeCallback(WiFiManager *myWiFiManager)
   //entered config mode, make led toggle faster
   ticker.attach(0.2, tick);
 }
+
+
+/******** ENDING DECLARE **********************/
 
 void setup()
 {
@@ -133,7 +146,7 @@ void setup()
   Serial.print(digitalRead(Relay2));
   Serial.print(" ");
   delay(4000);
-  digitalWrite(Relay1,  HIGH);
+  digitalWrite(Relay1, HIGH);
   digitalWrite(Relay2, HIGH);
   Serial.print(digitalRead(Relay1));
   Serial.print(" ");
@@ -156,15 +169,20 @@ void setup()
   //For Finger Print ///
   Serial.println("FingerPrint Begin");
   Serial2.begin(57600);
-  if (finger.begin()) {
+  if (finger.begin())
+  {
     finger.readParams(&params);
     Serial.println("Found fingerprint sensor!");
-    Serial.print("Capacity: "); Serial.println(params.capacity);
-    Serial.print("Packet length: "); Serial.println(FPM::packet_lengths[params.packet_len]);
+    Serial.print("Capacity: ");
+    Serial.println(params.capacity);
+    Serial.print("Packet length: ");
+    Serial.println(FPM::packet_lengths[params.packet_len]);
   }
-  else {
+  else
+  {
     Serial.println("Did not find fingerprint sensor :(");
-    while (1) yield();
+    while (1)
+      yield();
   }
   //////////////////////////////////////
 
@@ -176,11 +194,10 @@ void setup()
   //keep LED on
   digitalWrite(BUILTIN_LED, HIGH);
 
-
   lcd.clear();
   attachInterrupt(button1.PIN, isr2, FALLING);
   Serial.println("Ok Start");
-  blinker.attach(0.2, caculate_v); //Ticker for calculate speed
+  blinker.attach(0.5, caculate_v); //Ticker for calculate speed
   sent_speed.attach(10, push_data_to_server);
   mqtt.subscribe(&onoff_relay1);
   mqtt.subscribe(&onoff_relay2);
@@ -188,48 +205,23 @@ void setup()
   button1.numberKeyPresses = 0;
   fid = 0;
   state_lcd = 0;
+
+  //create a task that will be executed in the Task1code() function, with priority 1 and executed on core 0
+  xTaskCreatePinnedToCore(
+    Task1code,   /* Task function. */
+    "Task1",     /* name of task. */
+    10000,       /* Stack size of task */
+    NULL,        /* parameter of the task */
+    1,           /* priority of the task */
+    &Task1,      /* Task handle to keep track of created task */
+    1);          /* pin task to core 0 */
 }
 
 void loop()
 {
-  MQTT_connect();
+  //  MQTT_connect();
+  //  MQTT_Pull_Data();
 
-  // this is our 'wait for incoming subscription packets' busy subloop
-  // try to spend your time here
-
-  Adafruit_MQTT_Subscribe *subscription;
-  while ((subscription = mqtt.readSubscription(5000))) {
-    // Check if its the onoff button feed
-    if (subscription == &onoff_relay1) { //onoff_relay1
-      Serial.print(F("On-Off button: "));
-      Serial.println((char *)onoff_relay1.lastread);
-
-      if (strcmp((char *)onoff_relay1.lastread, "ON") == 0) {
-        digitalWrite(Relay1, LOW);
-      }
-      if (strcmp((char *)onoff_relay1.lastread, "OFF") == 0) {
-        digitalWrite(Relay1, HIGH);
-      }
-    }
-
-    // check if its the slider feed
-    if (subscription == &onoff_relay2) { //onoff_relay1
-      Serial.print(F("On-Off button: "));
-      Serial.println((char *)onoff_relay2.lastread);
-
-      if (strcmp((char *)onoff_relay2.lastread, "ON") == 0) {
-        digitalWrite(Relay2, LOW);
-      }
-      if (strcmp((char *)onoff_relay2.lastread, "OFF") == 0) {
-        digitalWrite(Relay2, HIGH);
-      }
-    }
-  }
-
-  // ping the server to keep the mqtt connection alive
-  if (! mqtt.ping()) {
-    mqtt.disconnect();
-  }
   docnut();
   lcd_display();
 
@@ -240,7 +232,7 @@ void loop()
   }
   //  Serial.print(button1.numberKeyPresses);
   //  Serial.print(" ");
-  //         Serial.print(digitalRead(nut1));
+  //  Serial.print(digitalRead(nut1));
   //  Serial.print(" ");
   //  Serial.print(digitalRead(nut2));
   //  Serial.print(" ");
@@ -252,11 +244,11 @@ void loop()
 
 void caculate_v()
 {
-  v_encoder = (button1.numberKeyPresses - last_encoderPosA) * 5;
+  v_encoder = (button1.numberKeyPresses - last_encoderPosA) * 2;
   last_encoderPosA = button1.numberKeyPresses;
   calories = button1.numberKeyPresses * 40 / 1000 / 1600 * 1.5;
-  Serial.print("B:");
-  Serial.print(digitalRead(2));
+  //  Serial.print("B:");
+  //  Serial.print(digitalRead(2));
   Serial.print(" S:");
   Serial.print(button1.numberKeyPresses / 1600 * 1.5);
   Serial.print(" V:");
@@ -265,7 +257,11 @@ void caculate_v()
 
 void docnut()
 {
-
+  //#define nut1 14
+  //#define nut2 26
+  //#define nut3 27
+  //#define nut4 25
+  //================================//
   if (digitalRead(14) == 0)
     dem1++;
   if (dem1 == 2 && state_lcd == 0)
@@ -290,6 +286,8 @@ void docnut()
     lcd_display();
     sent_data1();
     delay(3000);
+    sent_data2();
+    Serial.println("Done send to 2 feed!");
     lcd.clear();
   }
   if (digitalRead(26) == 1)
@@ -305,7 +303,6 @@ void docnut()
   }
   if (digitalRead(27) == 1)
     dem3 = 0;
-  //================================//
   //================================//
   if (digitalRead(25) == 0)
     dem4++;
@@ -334,7 +331,7 @@ void sent_data1()
   String sufix = " HTTP/1.1";
   String b = String(button1.numberKeyPresses / 1600 * 1.5);
   String c = String(calories);
-  String a = "GET https://maker.ifttt.com/trigger/fbchat/with/key/dz_0EAp6pGiE4DAvPiJ1DG/?value1=" + b + "&value2=" + c;
+  String a = "GET https://maker.ifttt.com/trigger/send_data/with/key/cepm69MCiDhAU8Ai5gwLO8/?value1=" + b + "&value2=" + c;
   client.println(a);
   //client.println(("GET https://maker.ifttt.com/trigger/homefeed/with/key/dz_0EAp6pGiE4DAvPiJ1DG/?value1=thienlccd HTTP/1.1"));
   client.println(F("Host: maker.ifttt.com"));
@@ -353,7 +350,44 @@ void sent_data1()
     return;
   }
   client.stop();
+  
 }
+
+void sent_data2()
+{
+  //real_last_value_save  ; calories
+  if (!client.connect("maker.ifttt.com", 80))
+  {
+    Serial.println(F("Connection failed"));
+    return;
+  }
+  Serial.println(F("Connected!"));
+  // Send HTTP request
+  String sufix = " HTTP/1.1";
+  String b = String(button1.numberKeyPresses / 1600 * 1.5);
+  String c = String(calories);
+  String a = "GET https://maker.ifttt.com/trigger/send_all_data/with/key/cepm69MCiDhAU8Ai5gwLO8/?value1=" + b + "&value2=" + c;
+  client.println(a);
+  //client.println(("GET https://maker.ifttt.com/trigger/homefeed/with/key/dz_0EAp6pGiE4DAvPiJ1DG/?value1=thienlccd HTTP/1.1"));
+  client.println(F("Host: maker.ifttt.com"));
+  client.println(F("Connection: close"));
+  if (client.println() == 0)
+  {
+    Serial.println(F("Failed to send request"));
+    return;
+  }
+  char status[32] = {0};
+  client.readBytesUntil('\r', status, sizeof(status));
+  if (strcmp(status, "HTTP/1.1 200 OK") != 0)
+  {
+    Serial.print(F("Unexpected response: "));
+    Serial.println(status);
+    return;
+  }
+  client.stop();
+  
+}
+
 
 int search_database()
 {
@@ -587,53 +621,120 @@ void lcd_display()
     fid = 0;
   }
 }
-void MQTT_connect() {
+void MQTT_connect()
+{
   int8_t ret;
 
   // Stop if already connected.
-  if (mqtt.connected()) {
+  if (mqtt.connected())
+  {
     return;
   }
 
   Serial.print("Connecting to MQTT... ");
 
   uint8_t retries = 3;
-  while ((ret = mqtt.connect()) != 0) { // connect will return 0 for connected
+  while ((ret = mqtt.connect()) != 0)
+  { // connect will return 0 for connected
     Serial.println(mqtt.connectErrorString(ret));
     Serial.println("Retrying MQTT connection in 5 seconds...");
     mqtt.disconnect();
-    delay(5000);  // wait 5 seconds
+    delay(5000); // wait 5 seconds
     retries--;
-    if (retries == 0) {
+    if (retries == 0)
+    {
       // basically die and wait for WDT to reset me
-      while (1);
+      while (1)
+        ;
     }
   }
   Serial.println("MQTT Connected!");
 }
 //sent_speed.attach(0.2, push_data_to_server);
 
+void push_data_to_server()
+{
+  if (state_lcd == 2 || state_lcd == 3)
+  {
+    Serial.print(F("\nSending speed calculator "));
+    Serial.print(v_encoder / 1600 * 1.5 * 3.6);
+    Serial.print("...");
+    if (!speed_encoder.publish(v_encoder / 1600 * 1.5 * 3.6))
+    {
+      Serial.println(F("Failed"));
+    }
+    else
+    {
+      Serial.println(F("OK!"));
+    }
 
-void push_data_to_server() {
-  Serial.print(F("\nSending speed calculator "));
-  Serial.print(v_encoder / 1600 * 1.5 * 3.6);
-  Serial.print("...");
-  if (! speed_encoder.publish(v_encoder / 1600 * 1.5 * 3.6)) {
-    Serial.println(F("Failed"));
-  } else {
-    Serial.println(F("OK!")); 
-  }
-
-  Serial.print(F("\nSending all data to feed "));
-  Serial.print(calories);
-  Serial.print("...");
-  if (! all_data_collection.publish(calories)) {
-    Serial.println(F("Failed"));
-  } else {
-    Serial.println(F("OK!"));
+    Serial.print(F("\nSending all data to feed "));
+    Serial.print(calories);
+    Serial.print("...");
+    if (!all_data_collection.publish(calories))
+    {
+      Serial.println(F("Failed"));
+    }
+    else
+    {
+      Serial.println(F("OK!"));
+    }
   }
 }
 
+void MQTT_Pull_Data() {
+  Adafruit_MQTT_Subscribe *subscription;
+  while ((subscription = mqtt.readSubscription(5000)))
+  {
+    // Check if its the onoff button feed
+    if (subscription == &onoff_relay1)
+    { //onoff_relay1
+      Serial.print(F("On-Off button: "));
+      Serial.println((char *)onoff_relay1.lastread);
+
+      if (strcmp((char *)onoff_relay1.lastread, "ON") == 0)
+      {
+        digitalWrite(Relay1, LOW);
+      }
+      if (strcmp((char *)onoff_relay1.lastread, "OFF") == 0)
+      {
+        digitalWrite(Relay1, HIGH);
+      }
+    }
+
+    // check if its the slider feed
+    if (subscription == &onoff_relay2)
+    { //onoff_relay1
+      Serial.print(F("On-Off button: "));
+      Serial.println((char *)onoff_relay2.lastread);
+
+      if (strcmp((char *)onoff_relay2.lastread, "ON") == 0)
+      {
+        digitalWrite(Relay2, LOW);
+      }
+      if (strcmp((char *)onoff_relay2.lastread, "OFF") == 0)
+      {
+        digitalWrite(Relay2, HIGH);
+      }
+    }
+  }
+
+  // ping the server to keep the mqtt connection alive
+  if (!mqtt.ping())
+  {
+    mqtt.disconnect();
+  }
+}
+
+void Task1code( void * pvParameters ) {
+
+  for (;;) {
+    Serial.print("Task1 running on core ");
+    Serial.println(xPortGetCoreID());
+    MQTT_connect();
+    MQTT_Pull_Data();
+  }
+}
 //  v_encoder = (button1.numberKeyPresses - last_encoderPosA) * 5;
 //  last_encoderPosA = button1.numberKeyPresses;
 //  calories = button1.numberKeyPresses * 40 / 1000 / 1600 * 1.5;
